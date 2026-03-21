@@ -82,7 +82,8 @@ public class BackupService : BackgroundService
         var host = cfg.GetValue<string>("Host") ?? "localhost";
         var user = cfg.GetValue<string>("User") ?? "postgres";
         var db = cfg.GetValue<string>("Database") ?? "postgres";
-        var backupDir = cfg.GetValue<string>("BackupDirectory") ?? "./backups";
+        var useLocalBackupDir = cfg.GetValue<bool>("UseLocalBackupDirectory", false);
+        var backupDir = useLocalBackupDir ? cfg.GetValue<string>("LocalBackupDirectory") ?? "./backups" : cfg.GetValue<string>("BackupDirectory") ?? "./backups";
         var pgDumpPath = cfg.GetValue<string>("PgDumpPath") ?? "pg_dump";
         var pgRestorePath = cfg.GetValue<string>("PgRestorePath") ?? "pg_restore";
         var compression = cfg.GetValue<int>("CompressionLevel", 9);
@@ -157,17 +158,21 @@ public class BackupService : BackgroundService
     {
         try
         {
+            _logger.LogInformation("Running backup cleanup: BackupDirectory={BackupDir}, RetentionDays={RetentionDays}", backupDir, retentionDays);
             var files = Directory.GetFiles(backupDir, "*.dump");
             var cutoff = DateTime.UtcNow.AddDays(-retentionDays);
+            int deletedCount = 0;
             foreach (var f in files)
             {
                 var info = new FileInfo(f);
                 if (info.LastWriteTimeUtc < cutoff)
                 {
                     info.Delete();
+                    deletedCount++;
                     _logger.LogInformation("Deleted old backup {File}", f);
                 }
             }
+            _logger.LogInformation("Backup cleanup completed: deleted {DeletedCount} files older than {RetentionDays} days from {BackupDir}", deletedCount, retentionDays, backupDir);
         }
         catch (Exception ex)
         {
