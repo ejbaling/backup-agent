@@ -6,17 +6,26 @@ public record CommandResult(bool Success, int ExitCode, string Output, string Er
 
 public class CommandRunner
 {
-        public async Task<CommandResult> RunCommand(string command, string args, CancellationToken ct = default)
+    public async Task<CommandResult> RunCommand(string command, string args, IDictionary<string, string>? environment = null, CancellationToken ct = default)
+    {
+        var psi = new ProcessStartInfo
         {
-            var psi = new ProcessStartInfo
+            FileName = command,
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        if (environment != null)
+        {
+            foreach (var kv in environment)
             {
-                FileName = command,
-                Arguments = args,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+                // set environment variable for the child process
+                psi.Environment[kv.Key] = kv.Value;
+            }
+        }
 
         try
         {
