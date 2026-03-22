@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using Amazon.SimpleSystemsManagement;
 using Amazon.SimpleSystemsManagement.Model;
+using BackupAgent.Data;
 
 namespace BackupAgent.Services;
 
@@ -12,51 +13,23 @@ public class BackupService : BackgroundService
     private readonly ILogger<BackupService> _logger;
     private readonly IConfiguration _config;
     private readonly Utilities.CommandRunner _runner;
-    private string? _password;
+    private readonly RagAnalyzer _analyzer;
+    private readonly PostgresConnectionProvider _pgConnProvider;
 
-    public BackupService(ILogger<BackupService> logger, IConfiguration config, Utilities.CommandRunner runner)
+    public BackupService(ILogger<BackupService> logger, IConfiguration config, Utilities.CommandRunner runner, RagAnalyzer analyzer, PostgresConnectionProvider pgConnProvider)
     {
         _logger = logger;
         _config = config;
         _runner = runner;
+        _analyzer = analyzer;
+        _pgConnProvider = pgConnProvider;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("BackupAgent started.");
 
-        // Fetch Parameter Store password once at startup (if configured)
-        try
-        {
-            var cfgRoot = _config.GetSection("Backup");
-            var passwordParameter = cfgRoot.GetValue<string>("PasswordParameterName");
-            if (!string.IsNullOrEmpty(passwordParameter))
-            {
-                try
-                {
-                    using var ssm = new AmazonSimpleSystemsManagementClient();
-                    var resp = await ssm.GetParameterAsync(new GetParameterRequest
-                    {
-                        Name = passwordParameter,
-                        WithDecryption = true
-                    }, stoppingToken);
-
-                    _password = resp.Parameter?.Value;
-                    if (!string.IsNullOrEmpty(_password))
-                    {
-                        _logger.LogInformation("Retrieved DB password from Parameter Store (will be injected into child process environment)");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to retrieve password from Parameter Store: {Name}", passwordParameter);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Unexpected error while attempting to read password parameter at startup");
-        }
+        // Password is initialized by PasswordInitializer at startup; no need to fetch here.
 
         var intervalSeconds = _config.GetValue<int>("Backup:IntervalSeconds", 3600);
 
@@ -97,11 +70,11 @@ public class BackupService : BackgroundService
         _logger.LogInformation("Using pg_dump path: {PgDumpPath}", pgDumpPath);
         _logger.LogInformation("Starting pg_dump for {Database} to {File}", db, fileName);
 
-        // If a password was retrieved at startup, inject it into child process env
+        // Inject PGPASSWORD into child process env if provider has the password
         IDictionary<string, string>? env = null;
-        if (!string.IsNullOrEmpty(_password))
+        if (_pgConnProvider.TryGetPassword(out var pwd) && !string.IsNullOrEmpty(pwd))
         {
-            env = new Dictionary<string, string> { { "PGPASSWORD", _password } };
+            env = new Dictionary<string, string> { { "PGPASSWORD", pwd } };
         }
 
         // If the configured path is a batch file on Windows, run via cmd.exe /c
@@ -122,7 +95,16 @@ public class BackupService : BackgroundService
         if (!result.Success)
         {
             _logger.LogError("pg_dump failed: {Error}", result.Error);
-            // Placeholder: integrate LLM/RAG analysis here
+            try
+            {
+                var contextInfo = $"Command: {dumpCommand} {dumpArgs}\nFile: {fileName}\nStdout: {result.Output}";
+                var analysis = await _analyzer.AnalyzeFailureAsync(result.Error, contextInfo, ct);
+                _logger.LogError("pg_dump analysis: {Analysis}", analysis);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to analyze pg_dump failure");
+            }
             return;
         }
 
