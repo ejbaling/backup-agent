@@ -24,7 +24,7 @@ public class PasswordInitializer : IHostedService
         var paramName = _config.GetSection("Backup").GetValue<string>("PasswordParameterName");
         if (string.IsNullOrEmpty(paramName))
         {
-            _logger.LogInformation("No SSM parameter configured for Postgres password; skipping initializer.");
+            _logger.LogInformation("No SSM parameter configured for Postgres password; skipping SSM fetch.");
             return;
         }
 

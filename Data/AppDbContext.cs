@@ -14,5 +14,11 @@ public class AppDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
         modelBuilder.HasPostgresExtension("vector");
+        modelBuilder.Entity<RagDocument>()
+            .Property(d => d.MetadataJson)
+            .HasColumnType("jsonb");
+        modelBuilder.Entity<RagChunk>()
+            .Property(d => d.MetadataJson)
+            .HasColumnType("jsonb");
     }
 }

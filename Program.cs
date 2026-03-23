@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Http;
 using BackupAgent.Data;
 using BackupAgent.Services;
 using BackupAgent.Utilities;
@@ -17,13 +18,15 @@ var host = Host.CreateDefaultBuilder(args)
         // Ensure password initializer runs before other hosted services
         services.AddSingleton<PostgresConnectionProvider>();
         services.AddSingleton<PasswordInitializer>();
-        services.AddHostedService(sp => sp.GetRequiredService<PasswordInitializer>());
+        // PasswordInitializer is called manually before host.RunAsync() to
+        // guarantee the password is set before DbContextOptions are resolved.
 
         services.AddHostedService<BackupService>();
         services.AddSingleton<CommandRunner>();
 
         // RAG / Ollama services
-        services.AddSingleton<OllamaClient>(sp => new OllamaClient(new System.Net.Http.HttpClient(), sp.GetRequiredService<IConfiguration>()));
+        // Register as a typed HTTP client so DI provides HttpClient, IConfiguration, and ILogger<OllamaClient>
+        services.AddHttpClient<OllamaClient>();
         services.AddSingleton<VectorStore>();
         services.AddSingleton<RagAnalyzer>();
 
@@ -41,5 +44,10 @@ var host = Host.CreateDefaultBuilder(args)
         logging.AddConsole();
     })
     .Build();
+
+// Run PasswordInitializer before the host starts so the password is set
+// before EF Core resolves DbContextOptions<AppDbContext> (a singleton).
+var passwordInitializer = host.Services.GetRequiredService<PasswordInitializer>();
+await passwordInitializer.StartAsync(CancellationToken.None);
 
 await host.RunAsync();

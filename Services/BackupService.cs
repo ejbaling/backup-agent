@@ -48,7 +48,7 @@ public class BackupService : BackgroundService
         }
     }
 
-        private async Task RunBackupOnce(CancellationToken ct)
+    private async Task RunBackupOnce(CancellationToken ct)
     {
         var cfg = _config.GetSection("Backup");
         _logger.LogInformation("Backup config values: PgDumpPath={PgDumpPath}, PgRestorePath={PgRestorePath}, BackupDirectory={BackupDirectory}", cfg["PgDumpPath"], cfg["PgRestorePath"], cfg["BackupDirectory"]);
@@ -97,7 +97,7 @@ public class BackupService : BackgroundService
             _logger.LogError("pg_dump failed: {Error}", result.Error);
             try
             {
-                var contextInfo = $"Command: {dumpCommand} {dumpArgs}\nFile: {fileName}\nStdout: {result.Output}";
+                var contextInfo = $"Command: {dumpCommand}\nStdout: {result.Output}";
                 var analysis = await _analyzer.AnalyzeFailureAsync(result.Error, contextInfo, ct);
                 _logger.LogError("pg_dump analysis: {Analysis}", analysis);
             }

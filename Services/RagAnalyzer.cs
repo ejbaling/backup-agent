@@ -63,6 +63,7 @@ public class RagAnalyzer
                 _logger.LogWarning(ex, "Failed to index error into vector store");
             }
 
+            // return resp == null ? "No analysis available." : DeduplicateParagraphs(resp);
             return resp ?? "No analysis available.";
         }
         catch (Exception ex)
@@ -70,5 +71,26 @@ public class RagAnalyzer
             _logger.LogWarning(ex, "RAG analysis failed");
             return "RAG analysis failed: " + ex.Message;
         }
+    }
+
+    private static string DeduplicateParagraphs(string text)
+    {
+        // Normalize line indentation first
+        var lines = text.ReplaceLineEndings("\n").Split('\n');
+        var normalized = string.Join("\n", lines.Select(l => l.TrimStart()));
+
+        // Split on blank lines, keep only first occurrence of each paragraph (trimmed).
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new StringBuilder();
+        foreach (var para in normalized.Split(["\n\n"], StringSplitOptions.None))
+        {
+            var key = para.Trim();
+            if (key.Length == 0 || seen.Add(key))
+            {
+                if (result.Length > 0) result.AppendLine();
+                result.AppendLine(para);
+            }
+        }
+        return result.ToString().TrimEnd();
     }
 }

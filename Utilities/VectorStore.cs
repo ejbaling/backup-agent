@@ -1,6 +1,8 @@
 using System.Text.Json;
 using BackupAgent.Services;
+using System.Linq;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using BackupAgent.Data;
 using RedwoodIloilo.Common.Entities;
@@ -21,12 +23,17 @@ public class VectorStore
     private readonly OllamaClient _ollama;
     private readonly string _indexPath;
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
+    private readonly ILogger<VectorStore> _logger;
+    private readonly int _embeddingDim;
+    private static readonly char[] separator = new[] { '\r', '\n' };
 
-    public VectorStore(OllamaClient ollama, IConfiguration cfg, IDbContextFactory<AppDbContext> dbFactory)
+    public VectorStore(OllamaClient ollama, IConfiguration cfg, IDbContextFactory<AppDbContext> dbFactory, ILogger<VectorStore> logger)
     {
         _ollama = ollama;
         _dbFactory = dbFactory;
+        _logger = logger;
         _indexPath = cfg.GetValue<string>("Rag:IndexPath") ?? "./rag_index";
+        _embeddingDim = cfg.GetValue<int>("Rag:EmbeddingDimension", 1024);
         Directory.CreateDirectory(_indexPath);
     }
 
@@ -36,12 +43,16 @@ public class VectorStore
         var signature = ComputeSha256Hex(normalized);
 
         var combined = (error ?? string.Empty) + "\n" + (context ?? string.Empty);
-        var emb = await _ollama.GetEmbeddingAsync(combined) ?? Array.Empty<float>();
+
+        // Derive a human-friendly title: first non-empty line of the error, truncated.
+        var title = (error ?? string.Empty).Split(separator, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? signature;
+        if (title.Length > 200) title = title[..200];
+        var emb = await _ollama.GetEmbeddingAsync(combined);
 
         await using var db = await _dbFactory.CreateDbContextAsync();
 
-        // look up document by Title (explicit field) — no reflection
-        var existingDoc = await db.RagDocuments.FirstOrDefaultAsync(d => d.Title == signature);
+        // look up document by Signature (explicit field) — no reflection
+        var existingDoc = await db.RagDocuments.FirstOrDefaultAsync(d => d.Signature == signature);
         RagDocument docObj;
         if (existingDoc != null)
         {
@@ -56,15 +67,18 @@ public class VectorStore
             {
                 // ignore metadata update failures
             }
+
             docObj = existingDoc;
         }
         else
         {
             var newDoc = new RagDocument
             {
-                Title = signature,
+                Id = Guid.NewGuid(),
+                Title = title,
+                Signature = signature,
                 CreatedAt = DateTime.UtcNow,
-                MetadataJson = JsonSerializer.Serialize(new { error = error, context = context })
+                MetadataJson = JsonSerializer.Serialize(new { error, context })
             };
 
             db.RagDocuments.Add(newDoc);
@@ -76,17 +90,31 @@ public class VectorStore
         var chunkText = combined;
         var chunk = new RagChunk
         {
+            Id = Guid.NewGuid(),
+            RagDocumentId = docObj.Id,
+            ChunkIndex = 0,
             Text = chunkText,
-            Document = (RagDocument)docObj
+            CreatedAt = DateTime.UtcNow
         };
 
-        try
+        // Only set embedding if we actually received a vector with the expected dimension
+        if (emb != null && emb.Length > 0)
         {
-            chunk.Embedding = new Vector(emb);
-        }
-        catch
-        {
-            try { chunk.Embedding = new Vector(emb); } catch { }
+            if (emb.Length != _embeddingDim)
+            {
+                _logger.LogWarning("Embedding dimension mismatch: expected {Expected}, got {Got}. Skipping embedding.", _embeddingDim, emb.Length);
+            }
+            else
+            {
+                try
+                {
+                    chunk.Embedding = new Vector(emb);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to set chunk embedding");
+                }
+            }
         }
 
         // Pre-insert check: avoid inserting duplicate chunks for the same document+text.
@@ -99,9 +127,16 @@ public class VectorStore
                 var existingEmb = ExtractEmbedding(existingChunk);
                 if ((existingChunk.Embedding == null || existingEmb == null || existingEmb.Length == 0) && (emb?.Length > 0))
                 {
-                    existingChunk.Embedding = chunk.Embedding;
-                    db.Update(existingChunk);
-                    await db.SaveChangesAsync();
+                    if (emb.Length != _embeddingDim)
+                    {
+                        _logger.LogWarning("Not updating existing chunk embedding: embedding dim {Got} doesn't match expected {Expected}", emb.Length, _embeddingDim);
+                    }
+                    else
+                    {
+                        existingChunk.Embedding = chunk.Embedding;
+                        db.Update(existingChunk);
+                        await db.SaveChangesAsync();
+                    }
                 }
             }
             catch { }
