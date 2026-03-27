@@ -1,23 +1,13 @@
 version: "3.8"
 
 services:
-  pg-backup:
-    image: postgres:16
-    volumes:
-      - ./backups:/backups
-
-  pg-restore-target:
-    image: postgres:16
+  backup-agent:
+    build: .
+    image: backup-agent:latest
     environment:
-      POSTGRES_USER: restore_user
-      POSTGRES_PASSWORD: restore_pass
-      POSTGRES_DB: restore_db
-    ports:
-      - "5433:5432"
+      - ASPNETCORE_ENVIRONMENT=Production
+      # Optional: allow overriding AWS region / other env vars here
     volumes:
       - ./backups:/backups
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U restore_user -d restore_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - ./appsettings.json:/app/appsettings.json:ro
+    restart: unless-stopped
