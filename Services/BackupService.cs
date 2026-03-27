@@ -131,9 +131,84 @@ public class BackupService : BackgroundService
 
         _logger.LogInformation("Backup verified successfully: {File}", fileName);
 
+        // Optionally restore to a simulation target to validate the full backup/restore cycle
+        var simSection = cfg.GetSection("RestoreSimulation");
+        if (simSection.GetValue<bool>("Enabled", false))
+        {
+            await RunRestoreSimulation(fileName, pgRestorePath, simSection, ct);
+        }
+
         // Cleanup old backups
         var retentionDays = cfg.GetValue<int>("RetentionDays", 7);
         CleanupOldBackups(backupDir, retentionDays);
+    }
+
+    private async Task RunRestoreSimulation(string backupFile, string pgRestorePath, IConfigurationSection sim, CancellationToken ct)
+    {
+        var host = sim.GetValue<string>("Host") ?? "localhost";
+        var port = sim.GetValue<int>("Port", 5432);
+        var user = sim.GetValue<string>("User") ?? "postgres";
+        var database = sim.GetValue<string>("Database") ?? "restore_db";
+
+        _logger.LogInformation("Starting restore simulation: {File} -> {Host}:{Port}/{Database}", backupFile, host, port, database);
+
+        IDictionary<string, string>? env = null;
+        if (_pgConnProvider.TryGetPassword(out var providerPwd) && !string.IsNullOrEmpty(providerPwd))
+        {
+            env = new Dictionary<string, string> { { "PGPASSWORD", providerPwd } };
+        }
+
+        // Drop and recreate the target database so each simulation starts clean.
+        // Uses psql via the pg_restore directory (assumes psql lives beside pg_restore).
+        var psqlPath = Path.Combine(Path.GetDirectoryName(pgRestorePath) ?? string.Empty, "psql" + Path.GetExtension(pgRestorePath));
+        if (!File.Exists(psqlPath))
+            psqlPath = "psql"; // fall back to PATH
+
+        var dropArgs = $"-h {host} -p {port} -U {user} -d postgres -c \"DROP DATABASE IF EXISTS \\\"{database}\\\";\"";
+        var createArgs = $"-h {host} -p {port} -U {user} -d postgres -c \"CREATE DATABASE \\\"{database}\\\";\"";
+
+        _logger.LogInformation("Dropping existing restore-target database '{Database}'", database);
+        var dropResult = await _runner.RunCommand(psqlPath, dropArgs, env, ct);
+        if (!dropResult.Success)
+            _logger.LogWarning("DROP DATABASE warning (may be harmless): {Error}", dropResult.Error);
+
+        _logger.LogInformation("Creating restore-target database '{Database}'", database);
+        var createResult = await _runner.RunCommand(psqlPath, createArgs, env, ct);
+        if (!createResult.Success)
+        {
+            _logger.LogError("Failed to create restore-target database: {Error}", createResult.Error);
+            return;
+        }
+
+        // Run the actual pg_restore into the target database
+        var restoreArgs = $"-h {host} -p {port} -U {user} -d \"{database}\" -F c --no-owner --role={user} \"{backupFile}\"";
+        string restoreCommand = pgRestorePath;
+        if (restoreCommand.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) || restoreCommand.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            restoreArgs = $"/c \"\"{restoreCommand}\" {restoreArgs}\"";
+            restoreCommand = "cmd.exe";
+        }
+
+        _logger.LogInformation("Executing restore simulation: {Cmd} {Args}", restoreCommand, restoreArgs);
+        var restoreResult = await _runner.RunCommand(restoreCommand, restoreArgs, env, ct);
+
+        if (!restoreResult.Success)
+        {
+            _logger.LogError("Restore simulation failed: {Error}", restoreResult.Error);
+            try
+            {
+                var contextInfo = $"Command: {restoreCommand}\nStdout: {restoreResult.Output}";
+                var analysis = await _analyzer.AnalyzeFailureAsync(restoreResult.Error, contextInfo, ct);
+                _logger.LogError("Restore simulation analysis: {Analysis}", analysis);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to analyze restore simulation failure");
+            }
+            return;
+        }
+
+        _logger.LogInformation("Restore simulation completed successfully for {File}", backupFile);
     }
 
     private void CleanupOldBackups(string backupDir, int retentionDays)
