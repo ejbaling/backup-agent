@@ -1,13 +1,19 @@
-version: "3.8"
-
 services:
   backup-agent:
-    build: .
-    image: backup-agent:latest
+    image: emmanueljomer/backup-agent:latest
+    container_name: backup-agent
     environment:
-      - ASPNETCORE_ENVIRONMENT=Production
-      # Optional: allow overriding AWS region / other env vars here
+      ASPNETCORE_ENVIRONMENT: "Production"
+      AWS_REGION: "${AWS_REGION:-ap-southeast-2}"
     volumes:
-      - ./backups:/backups
+      - ./backups:/app/backups
       - ./appsettings.json:/app/appsettings.json:ro
+      - ./appsettings.Production.json:/app/appsettings.Production.json:ro
+      - ~/.aws:/root/.aws:ro
     restart: unless-stopped
+    networks:
+      - postgres-network
+
+networks:
+  postgres-network:
+    external: true

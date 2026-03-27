@@ -164,8 +164,11 @@ public class BackupService : BackgroundService
         if (!File.Exists(psqlPath))
             psqlPath = "psql"; // fall back to PATH
 
-        var dropArgs = $"-h {host} -p {port} -U {user} -d postgres -c \"DROP DATABASE IF EXISTS \\\"{database}\\\";\"";
-        var createArgs = $"-h {host} -p {port} -U {user} -d postgres -c \"CREATE DATABASE \\\"{database}\\\";\"";
+        // Use a known maintenance DB (template1) when issuing DROP/CREATE, since the default
+        // 'postgres' maintenance database may not exist on all servers (e.g. minimal images).
+        var maintenanceDb = "template1";
+        var dropArgs = $"-h {host} -p {port} -U {user} -d {maintenanceDb} -c \"DROP DATABASE IF EXISTS \\\"{database}\\\";\"";
+        var createArgs = $"-h {host} -p {port} -U {user} -d {maintenanceDb} -c \"CREATE DATABASE \\\"{database}\\\";\"";
 
         _logger.LogInformation("Dropping existing restore-target database '{Database}'", database);
         var dropResult = await _runner.RunCommand(psqlPath, dropArgs, env, ct);

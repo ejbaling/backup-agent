@@ -11,7 +11,9 @@ using Microsoft.EntityFrameworkCore;
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureAppConfiguration((ctx, cfg) =>
     {
-        cfg.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+        var env = ctx.HostingEnvironment;
+        cfg.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+           .AddJsonFile($"appsettings.{env.EnvironmentName}.json", optional: true, reloadOnChange: true);
     })
     .ConfigureServices((ctx, services) =>
     {
